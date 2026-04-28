@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base href="$FLUTTER_BASE_HREF">
+
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="description" content="DriveX - Elite Car Rental. Experience the future of mobility.">
+
+  <!-- iOS PWA meta tags -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="DriveX">
+  <meta name="theme-color" content="#F1F5F9">
+
+  <!-- Camera / media permissions for PWA & Safari -->
+  <meta http-equiv="Permissions-Policy" content="camera=*, microphone=*">
+  <meta name="allow" content="camera; microphone">
+
+
+  <!-- iOS touch icons (shows on home screen) -->
+  <link rel="apple-touch-icon" sizes="180x180" href="icons/Icon-192.png">
+  <link rel="apple-touch-icon" sizes="512x512" href="icons/Icon-512.png">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="favicon.png"/>
+
+  <title>DriveX - Elite Car Rental</title>
+  <link rel="manifest" href="manifest.json">
+
+  <style>
+    /* Prevent white flash on load */
+    body {
+      background-color: #F1F5F9;
+      margin: 0;
+      padding: 0;
+      height: 100vh;
+      overflow: hidden;
+    }
+  </style>
+</head>
+<body>
+  <!-- Tesseract.js — in-browser OCR engine -->
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  <!-- face-api.js — ML-based face detection -->
+  <script src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.12/dist/face-api.min.js"></script>
+  <script>
+    // OCR helper called from Dart via JS interop
+    let _ocrWorker = null;
+    async function ocrFromBytes(base64Data) {
+      try {
+        const bin = atob(base64Data);
+        const arr = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+        const blob = new Blob([arr], { type: 'image/jpeg' });
+        const result = await Tesseract.recognize(blob, 'eng', { logger: () => {} });
+        return result.data.text || '';
+      } catch (e) { console.error('OCR error:', e); return ''; }
+    }
+
+    // Motion detection: compare two base64 JPEG frames, return 0-100 change score
+    async function detectMotion(b64a, b64b) {
+      try {
+        const loadImg = (b64) => new Promise((res, rej) => {
+          const img = new Image();
+          img.onload = () => res(img);
+          img.onerror = rej;
+          img.src = 'data:image/jpeg;base64,' + b64;
+        });
+        const [imgA, imgB] = await Promise.all([loadImg(b64a), loadImg(b64b)]);
+        const w = 80, h = 60;
+        const c = document.createElement('canvas');
+        c.width = w; c.height = h;
+        const ctx = c.getContext('2d');
+        ctx.drawImage(imgA, 0, 0, w, h);
+        const dA = ctx.getImageData(0, 0, w, h).data;
+        ctx.drawImage(imgB, 0, 0, w, h);
+        const dB = ctx.getImageData(0, 0, w, h).data;
+        let diff = 0, total = 0;
+        const x1 = Math.floor(w * 0.2), x2 = Math.floor(w * 0.8);
+        const y1 = Math.floor(h * 0.15), y2 = Math.floor(h * 0.7);
+        for (let y = y1; y < y2; y++) {
+          for (let x = x1; x < x2; x++) {
+            const i = (y * w + x) * 4;
+            const d = Math.abs(dA[i] - dB[i]) + Math.abs(dA[i+1] - dB[i+1]) + Math.abs(dA[i+2] - dB[i+2]);
+            if (d > 100) diff++; // only count significant pixel changes
+            total++;
+          }
+        }
+        return Math.round((diff / total) * 100);
+      } catch (e) { console.error('Motion error:', e); return 0; }
+    }
+
+    // ── ML-based face detection with yaw estimation ──
+    let _faceApiReady = false;
+    let _faceApiLoading = false;
+
+    async function _initFaceApi() {
+      if (_faceApiReady || _faceApiLoading) return;
+      _faceApiLoading = true;
+      try {
+        const modelUrl = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.12/model/';
+        await Promise.all([
+          faceapi.nets.tinyFaceDetector.loadFromUri(modelUrl),
+          faceapi.nets.faceLandmark68TinyNet.loadFromUri(modelUrl)
+        ]);
+        _faceApiReady = true;
+        console.log('✓ Face detection + landmarks model loaded');
+      } catch (e) {
+        console.error('Face API load error:', e);
+      }
+      _faceApiLoading = false;
+    }
+
+    // Load models immediately on page load
+    _initFaceApi();
+
+    // Returns JSON string: {score, cx, cy, faceW, yaw}
+    // cx/cy = face center normalized 0-1, yaw = head rotation (-1..+1, negative=user turned left)
+    async function checkFacePresence(b64) {
+      const empty = JSON.stringify({score: 0, cx: 0.5, cy: 0.5, faceW: 0, yaw: 0});
+      try {
+        if (!_faceApiReady) {
+          await _initFaceApi();
+          if (!_faceApiReady) return empty;
+        }
+        const img = await new Promise((res, rej) => {
+          const i = new Image();
+          i.onload = () => res(i);
+          i.onerror = rej;
+          i.src = 'data:image/jpeg;base64,' + b64;
+        });
+
+        // Detect face with landmarks (true = use tiny landmark model)
+        const detection = await faceapi
+          .detectSingleFace(img, new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.5 }))
+          .withFaceLandmarks(true);
+
+        if (!detection) return empty;
+
+        const box = detection.detection.box;
+        const score = Math.round(detection.detection.score * 100);
+        const cx = (box.x + box.width / 2) / img.width;
+        const cy = (box.y + box.height / 2) / img.height;
+        const faceW = box.width / img.width;
+
+        // Compute yaw from landmarks
+        let yaw = 0;
+        try {
+          const lm = detection.landmarks;
+          const leftEye = lm.getLeftEye();
+          const rightEye = lm.getRightEye();
+          const nose = lm.getNose();
+
+          const leX = leftEye.reduce((s, p) => s + p.x, 0) / leftEye.length;
+          const reX = rightEye.reduce((s, p) => s + p.x, 0) / rightEye.length;
+          const eyeMidX = (leX + reX) / 2;
+          const interEye = Math.abs(reX - leX);
+          const noseTipX = nose[nose.length - 4].x; // nose tip center
+
+          if (interEye > 5) {
+            yaw = (noseTipX - eyeMidX) / (interEye * 0.6);
+            yaw = Math.max(-1.5, Math.min(1.5, yaw));
+          }
+          // NOTE: No negation needed — Flutter takePicture() returns raw unmirrored pixel data.
+          // Right turn → noseTip moves right → yaw > 0. Left turn → noseTip left → yaw < 0.
+        } catch (e) { /* landmarks failed, yaw stays 0 */ }
+
+        return JSON.stringify({score, cx, cy, faceW, yaw: Math.round(yaw * 100) / 100});
+      } catch (e) {
+        console.error('Face detect error:', e);
+        return empty;
+      }
+    }
+  </script>
+  <script src="flutter_bootstrap.js" async></script>
+</body>
+</html>
