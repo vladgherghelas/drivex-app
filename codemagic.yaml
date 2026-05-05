@@ -27,15 +27,30 @@ workflows:
           echo "--- Flutter version ---"
           flutter --version
 
-          echo "--- Building Flutter iOS app ---"
-          flutter build ios --release --no-codesign
+          echo "--- Generating Flutter engine and plugin registrant ---"
+          flutter build ios --release --no-codesign --no-tree-shake-icons || true
 
-          echo "--- Verifying Runner.app was produced ---"
-          ls -lh build/ios/iphoneos/
+          echo "--- Archiving with xcodebuild (no signing) ---"
+          xcodebuild \
+            -workspace ios/Runner.xcworkspace \
+            -scheme Runner \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_IDENTITY="" \
+            EXPANDED_CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            -archivePath "$CM_BUILD_DIR/Runner.xcarchive" \
+            archive
+
+          echo "--- Verifying archive contents ---"
+          ls -lh "$CM_BUILD_DIR/Runner.xcarchive/Products/Applications/"
 
           echo "--- Packaging IPA ---"
           mkdir -p Payload
-          cp -r build/ios/iphoneos/Runner.app Payload/
+          cp -r "$CM_BUILD_DIR/Runner.xcarchive/Products/Applications/Runner.app" Payload/
           zip -r drivex-unsigned.ipa Payload/
           rm -rf Payload
 
