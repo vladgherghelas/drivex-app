@@ -5,26 +5,42 @@ workflows:
     instance_type: mac_mini_m2
 
     environment:
-      flutter: 3.24.0
+      flutter: stable
       xcode: latest
       cocoapods: default
 
     scripts:
       - name: Get Flutter packages
-        script: flutter pub get
+        script: |
+          set -e
+          flutter pub get
 
       - name: Install CocoaPods dependencies
         script: |
-          cd ios
-          pod install
+          set -e
+          cd ios && pod install
 
       - name: Build unsigned IPA
         script: |
+          set -e
+
+          echo "--- Flutter version ---"
+          flutter --version
+
+          echo "--- Building Flutter iOS app ---"
           flutter build ios --release --no-codesign
+
+          echo "--- Verifying Runner.app was produced ---"
+          ls -lh build/ios/iphoneos/
+
+          echo "--- Packaging IPA ---"
           mkdir -p Payload
           cp -r build/ios/iphoneos/Runner.app Payload/
           zip -r drivex-unsigned.ipa Payload/
           rm -rf Payload
+
+          echo "--- Final IPA size ---"
+          ls -lh drivex-unsigned.ipa
 
     artifacts:
       - drivex-unsigned.ipa
