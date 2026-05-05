@@ -1,0 +1,39 @@
+workflows:
+  ios-unsigned-ipa:
+    name: iOS Unsigned IPA (AltStore)
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+
+    environment:
+      flutter: 3.24.0
+      xcode: latest
+      cocoapods: default
+
+    scripts:
+      - name: Get Flutter packages
+        script: flutter pub get
+
+      - name: Install CocoaPods dependencies
+        script: |
+          cd ios
+          pod install
+
+      - name: Build unsigned IPA
+        script: |
+          flutter build ios --release --no-codesign
+          mkdir -p build/ios/ipa/Payload
+          cp -r build/ios/iphoneos/Runner.app build/ios/ipa/Payload/
+          cd build/ios/ipa
+          zip -r ../../../drivex-unsigned.ipa Payload/
+
+    artifacts:
+      - drivex-unsigned.ipa
+      - build/ios/ipa/*.ipa
+
+    publishing:
+      email:
+        recipients:
+          - markgerbey5@gmail.com
+        notify:
+          success: true
+          failure: true
